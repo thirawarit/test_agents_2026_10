@@ -1,2 +1,7 @@
-external_files
+external_file
 *.local.*
+.rag_index/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
