@@ -57,6 +57,8 @@ def cmd_ask(config: Config, args: argparse.Namespace) -> int:
         print(format_sources(cited.sources))
     for warning in state.get("warnings", []):
         print(f"warning: {warning}", file=sys.stderr)
+    if args.show_score:
+        print(f"score: {_describe_score(config, state)}", file=sys.stderr)
     if state["draft"].mode == "empty":
         print(
             f"warning: topic not covered: best match scored {state['best_score']:.3f}, "
@@ -65,6 +67,19 @@ def cmd_ask(config: Config, args: argparse.Namespace) -> int:
         )
         return EXIT_NOT_COVERED
     return EXIT_NO_CITATION if cited.flagged else EXIT_OK
+
+
+def _describe_score(config: Config, state: dict) -> str:
+    if state["rare_terms"]:
+        decision = f"passed on rare term {', '.join(state['rare_terms'])}"
+    elif state["passages"]:
+        decision = "passed on cosine"
+    else:
+        decision = "refused"
+    return (
+        f"best match {state['best_score']:.3f}, "
+        f"retrieval.min_relevance {config.min_relevance:.2f}, {decision}"
+    )
 
 
 def cmd_doctor(config: Config, args: argparse.Namespace) -> int:
@@ -151,6 +166,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     ask = commands.add_parser("ask", help="summarize a topic across the documents")
     ask.add_argument("question")
+    ask.add_argument(
+        "--show-score",
+        action="store_true",
+        help="print the best match score and the cutoff decision to stderr",
+    )
     ask.set_defaults(handler=cmd_ask)
 
     doctor = commands.add_parser("doctor", help="check configuration, Ollama and the index")

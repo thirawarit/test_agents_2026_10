@@ -25,12 +25,20 @@ uv run md-rag doctor                    # check config, Ollama, models, index
 uv run md-rag index                     # embed new and changed files only
 uv run md-rag index --full              # rebuild everything
 uv run md-rag ask "สรุปแนวทางการสำรองข้อมูล"
+uv run md-rag ask --show-score "MinIO"  # also print the cutoff decision to stderr
 ```
 
 The config is read from `--config PATH`, then `$MD_RAG_CONFIG`, then
 `./config.local.toml`.
 
 `ask` prints the answer and a source list. Warnings go to stderr.
+
+`--show-score` adds one line to stderr, and the answer and exit code stay the
+same:
+
+```
+score: best match 0.498, retrieval.min_relevance 0.50, passed on rare term MinIO
+```
 
 | Exit code | Meaning |
 | --- | --- |
@@ -51,8 +59,9 @@ retrieve -> summarize -> agent <-> tools -> cite
 3. **Index:** stores vectors in NumPy and chunks plus BM25 tokens in JSON, in
    `.rag_index/`. A rerun embeds only changed files.
 4. **Retrieve:** refuses the question if its best dense cosine is below
-   `retrieval.min_relevance`. Otherwise it fuses dense and BM25 results, picks
-   varied chunks with MMR, and expands them to whole sections.
+   `retrieval.min_relevance` and it has no rare literal term from the documents.
+   Otherwise it fuses dense and BM25 results, picks varied chunks with MMR, and
+   expands them to whole sections.
 5. **Summarize:** uses one call if the sections fit, otherwise map-reduce with
    citation numbers preserved.
 6. **Agent:** a pass-through while the tool registry is empty.
@@ -62,11 +71,23 @@ The graph is fixed, so the model can't skip retrieval.
 
 ## Tuning
 
-- `retrieval.min_relevance` is 0.50. A refused question prints its best score to
-  stderr, which shows how close it came. Check this value on your own documents:
-  scores depend on the corpus, and two uncovered questions that scored below 0.50
-  on the fixtures scored above it on a larger synthetic corpus. Recheck it if
-  `embed_model` changes. Setting it to 0 turns the check off.
+- `retrieval.min_relevance` is 0.50. Use `ask --show-score` to see how your
+  questions score. Check this value on your own documents: scores depend on the
+  corpus, and two uncovered questions that scored below 0.50 on the fixtures
+  scored above it on a larger synthetic corpus. Recheck it if `embed_model`
+  changes. Setting it to 0 turns the check off.
+- `retrieval.rare_term_max_fraction` is 0.05, and it lets a low-scoring question
+  through if it has a rare literal term from the documents. Being in few chunks
+  isn't enough, because on a small corpus ordinary words are in few chunks too,
+  so a term must also pass one of these checks:
+  - Latin terms must be identifier-shaped in the documents: `MinIO`, `SEV3`,
+    `pg_size_pretty`, `deploy.sh`, `UTC`. Capitalized names such as `Singapore`
+    and plain words such as `canary` don't count.
+  - Thai terms must be uncommon, with a count of at most
+    `retrieval.rare_term_max_thai_freq` in PyThaiNLP's bundled word list. Every
+    other content word in the question must also be in the documents.
+
+  Setting `rare_term_max_fraction` to 0 turns this rule off.
 - `retrieval.mmr_keep` is the main control over focus. Lower values keep the
   answer on topic but can drop files from a cross-file summary. On the test
   fixtures, 6 removed off-topic facts but also lost one of the three files
@@ -111,10 +132,14 @@ gemma3 doesn't support tools either, so you'd need a generation model that does.
   - A question next to a covered topic can pass. A Thai sick leave question
     scored 0.64 against the annual leave section, so it gets an answer that says
     sick leave isn't covered but still cites other sections and exits 0.
+  - A question can pass because it contains a rare term, even when the rest of
+    it isn't covered. "How big is the SEV1 bonus?" passes on `SEV1`. The Thai word
+    list comes from textbooks, so everyday workplace words such as `ทีมงาน` can
+    count as rare too.
   - A covered question can be refused. This mostly affects loosely worded Thai
-    questions against English text, and bare identifiers such as
-    `pg_size_pretty`, because the check doesn't use keyword matches. If a
-    question is refused, try rewording it with terms from the documents.
+    questions against English text, and bare words that aren't identifier-shaped
+    such as `Singapore` or `canary`. If a question is refused, try a full question
+    using terms from the documents.
 - `gemma3` sometimes includes off-topic facts or blurs details when summarizing
   Thai. See `retrieval.mmr_keep` above.
 - Long code fences or tables are kept whole, so their embedding can be cut off at

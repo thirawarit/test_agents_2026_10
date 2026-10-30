@@ -175,7 +175,7 @@ def test_cut_off_output_is_reported():
 
 
 def run_ask(
-    monkeypatch, tmp_path, answer: str, retrieval=None, question="How do backups work?", extra=""
+    monkeypatch, tmp_path, answer: str, retrieval=None, question="How do backups work?", extra="", flags=()
 ) -> int:
     settings = tmp_path / "config.toml"
     settings.write_text(f'[paths]\ndocs_dir = "docs"\n{extra}', encoding="utf-8")
@@ -185,7 +185,7 @@ def run_ask(
     monkeypatch.setattr(cli, "make_embedder", lambda *args: None)
     monkeypatch.setattr(cli, "make_chat", lambda *args: ScriptedChat(lambda messages: answer))
     monkeypatch.setattr("md_rag.retrieve.Retriever", lambda *args: (lambda question: result))
-    return cli.main(["--config", str(settings), "ask", question])
+    return cli.main(["--config", str(settings), "ask", *flags, question])
 
 
 def test_cited_answer_prints_code_built_sources(monkeypatch, tmp_path, capsys):
@@ -222,6 +222,43 @@ def test_model_finding_nothing_in_map_reduce_also_exits_not_covered(monkeypatch,
     code = run_ask(monkeypatch, tmp_path, "NONE", Retrieval(passages, 0.7), extra=extra)
     assert code == cli.EXIT_NOT_COVERED
     assert "Sources:" not in capsys.readouterr().out
+
+
+def test_show_score_changes_only_stderr(monkeypatch, tmp_path, capsys):
+    plain_code = run_ask(monkeypatch, tmp_path, "Backups run nightly [1].")
+    plain = capsys.readouterr()
+    flagged_code = run_ask(monkeypatch, tmp_path, "Backups run nightly [1].", flags=["--show-score"])
+    flagged = capsys.readouterr()
+    assert plain_code == flagged_code == cli.EXIT_OK
+    assert plain.out == flagged.out
+    assert plain.err == ""
+    assert flagged.err == "score: best match 0.800, retrieval.min_relevance 0.50, passed on cosine\n"
+
+
+def test_score_stays_hidden_without_the_flag_when_refused(monkeypatch, tmp_path, capsys):
+    run_ask(monkeypatch, tmp_path, "unused", Retrieval([], 0.48))
+    assert "score:" not in capsys.readouterr().err
+
+
+def test_show_score_reports_a_rare_term_pass(monkeypatch, tmp_path, capsys):
+    retrieval = Retrieval([passage(1, "guide.md", "Ops")], 0.498, ("MinIO",))
+    code = run_ask(monkeypatch, tmp_path, "Stored there [1].", retrieval, "MinIO", flags=["--show-score"])
+    assert code == cli.EXIT_OK
+    expected = "score: best match 0.498, retrieval.min_relevance 0.50, passed on rare term MinIO\n"
+    assert capsys.readouterr().err == expected
+
+
+def test_show_score_keeps_the_refusal_exit_code(monkeypatch, tmp_path, capsys):
+    code = run_ask(monkeypatch, tmp_path, "unused", Retrieval([], 0.48), flags=["--show-score"])
+    assert code == cli.EXIT_NOT_COVERED
+    captured = capsys.readouterr()
+    assert captured.out == "The documents don't contain information on this topic.\n"
+    assert "score: best match 0.480, retrieval.min_relevance 0.50, refused\n" in captured.err
+
+
+def test_show_score_is_documented():
+    readme = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
+    assert "--show-score" in readme
 
 
 def test_exit_codes_are_documented():

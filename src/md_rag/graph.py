@@ -32,6 +32,7 @@ class RagState(TypedDict, total=False):
     question: str
     passages: list[Passage]
     best_score: float
+    rare_terms: tuple[str, ...]
     draft: Draft
     messages: Annotated[list[BaseMessage], add_messages]
     answer: str
@@ -65,7 +66,11 @@ def build_graph(
 
     def retrieve_node(state: RagState) -> dict[str, Any]:
         result = retriever(state["question"])
-        return {"passages": result.passages, "best_score": result.best_score}
+        return {
+            "passages": result.passages,
+            "best_score": result.best_score,
+            "rare_terms": result.rare_terms,
+        }
 
     def summarize_node(state: RagState) -> dict[str, Any]:
         draft = summarizer(state["question"], state["passages"])
