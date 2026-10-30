@@ -1,0 +1,31 @@
+# Copy to config.local.toml, which git ignores, and set docs_dir.
+# Relative paths are resolved from the directory holding the config file.
+
+[paths]
+docs_dir = "external_file"
+index_dir = ".rag_index"
+exclude = ["REQ.local.md"]
+
+[ollama]
+# Only loopback hosts are accepted, and cloud models are refused.
+host = "http://127.0.0.1:11434"
+embed_model = "bge-m3"
+generation_model = "gemma3:latest"
+temperature = 0.2
+# Ollama cuts an overflowing prompt without an error. Prompts are planned to
+# use at most 80% of num_ctx, minus num_predict.
+num_ctx = 16384
+num_predict = 1536
+
+[chunking]
+# Measured in word units, which suits both Thai and English.
+chunk_words = 350
+overlap_words = 50
+
+[retrieval]
+dense_top_k = 40
+bm25_top_k = 40
+rrf_k = 60
+mmr_keep = 24
+mmr_lambda = 0.7
+section_token_limit = 2000
