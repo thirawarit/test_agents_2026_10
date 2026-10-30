@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage
 from md_rag import cli
 from md_rag.citations import Source, format_sources, resolve_citations
 from md_rag.config import Config
-from md_rag.retrieve import Passage
+from md_rag.retrieve import Passage, Retrieval
 from md_rag.summarize import Summarizer
 
 
@@ -174,18 +174,18 @@ def test_cut_off_output_is_reported():
     assert any("num_predict" in warning for warning in draft.warnings)
 
 
-def run_ask(monkeypatch, tmp_path, answer: str) -> int:
+def run_ask(
+    monkeypatch, tmp_path, answer: str, retrieval=None, question="How do backups work?", extra=""
+) -> int:
     settings = tmp_path / "config.toml"
-    settings.write_text('[paths]\ndocs_dir = "docs"\n', encoding="utf-8")
+    settings.write_text(f'[paths]\ndocs_dir = "docs"\n{extra}', encoding="utf-8")
+    result = retrieval or Retrieval([passage(1, "guide.md", "Ops")], 0.8)
     monkeypatch.setattr(cli, "ensure_local_model", lambda *args: {})
     monkeypatch.setattr(cli, "load_index", lambda *args: None)
     monkeypatch.setattr(cli, "make_embedder", lambda *args: None)
     monkeypatch.setattr(cli, "make_chat", lambda *args: ScriptedChat(lambda messages: answer))
-    monkeypatch.setattr(
-        "md_rag.retrieve.Retriever",
-        lambda *args: (lambda question: [passage(1, "guide.md", "Ops")]),
-    )
-    return cli.main(["--config", str(settings), "ask", "How do backups work?"])
+    monkeypatch.setattr("md_rag.retrieve.Retriever", lambda *args: (lambda question: result))
+    return cli.main(["--config", str(settings), "ask", question])
 
 
 def test_cited_answer_prints_code_built_sources(monkeypatch, tmp_path, capsys):
@@ -198,3 +198,33 @@ def test_answer_with_no_citation_exits_with_its_own_code(monkeypatch, tmp_path, 
     captured = capsys.readouterr()
     assert "Sources:" not in captured.out
     assert "no valid citation" in captured.err
+
+
+def test_refused_question_says_so_and_lists_no_sources(monkeypatch, tmp_path, capsys):
+    refused = Retrieval([], 0.48)
+    assert run_ask(monkeypatch, tmp_path, "unused", refused) == cli.EXIT_NOT_COVERED
+    captured = capsys.readouterr()
+    assert captured.out == "The documents don't contain information on this topic.\n"
+    assert "best match scored 0.480" in captured.err
+    assert "min_relevance is 0.50" in captured.err
+    assert "no valid citation" not in captured.err
+
+
+def test_refused_thai_question_gets_a_thai_reply(monkeypatch, tmp_path, capsys):
+    code = run_ask(monkeypatch, tmp_path, "unused", Retrieval([], 0.48), "นโยบายการลาคลอดเป็นอย่างไร")
+    assert code == cli.EXIT_NOT_COVERED
+    assert capsys.readouterr().out == "ไม่พบข้อมูลเกี่ยวกับหัวข้อนี้ในเอกสาร\n"
+
+
+def test_model_finding_nothing_in_map_reduce_also_exits_not_covered(monkeypatch, tmp_path, capsys):
+    passages = [passage(number, text="word " * 400) for number in range(1, 21)]
+    extra = "[ollama]\nnum_ctx = 2048\nnum_predict = 256\n"
+    code = run_ask(monkeypatch, tmp_path, "NONE", Retrieval(passages, 0.7), extra=extra)
+    assert code == cli.EXIT_NOT_COVERED
+    assert "Sources:" not in capsys.readouterr().out
+
+
+def test_exit_codes_are_documented():
+    readme = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
+    assert f"| {cli.EXIT_NOT_COVERED} | Topic not covered" in readme
+    assert f"| {cli.EXIT_NO_CITATION} | Answer has no valid citation" in readme

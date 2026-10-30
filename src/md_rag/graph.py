@@ -14,7 +14,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
 from md_rag.citations import CitedAnswer, resolve_citations
-from md_rag.retrieve import Passage
+from md_rag.retrieve import Passage, Retrieval
 from md_rag.summarize import Draft
 from md_rag.textnorm import question_language
 from md_rag.tools import TOOLS
@@ -31,6 +31,7 @@ the complete answer. Keep every [n] citation from the draft exactly as written.
 class RagState(TypedDict, total=False):
     question: str
     passages: list[Passage]
+    best_score: float
     draft: Draft
     messages: Annotated[list[BaseMessage], add_messages]
     answer: str
@@ -52,7 +53,7 @@ def _run_tool(tools: dict[str, BaseTool], call: dict[str, Any]) -> ToolMessage:
 
 
 def build_graph(
-    retriever: Callable[[str], list[Passage]],
+    retriever: Callable[[str], Retrieval],
     summarizer: Callable[[str, list[Passage]], Draft],
     chat: Any,
     tools: dict[str, BaseTool] | None = None,
@@ -63,7 +64,8 @@ def build_graph(
     bound = chat.bind_tools(list(registry.values())) if registry else None
 
     def retrieve_node(state: RagState) -> dict[str, Any]:
-        return {"passages": retriever(state["question"])}
+        result = retriever(state["question"])
+        return {"passages": result.passages, "best_score": result.best_score}
 
     def summarize_node(state: RagState) -> dict[str, Any]:
         draft = summarizer(state["question"], state["passages"])
@@ -71,7 +73,8 @@ def build_graph(
 
     def agent_node(state: RagState) -> dict[str, Any]:
         draft_text = state["draft"].text
-        if bound is None:
+        # A not-covered reply is final: a model with tools must not answer anyway.
+        if bound is None or state["draft"].mode == "empty":
             return {"answer": draft_text}
         history = state.get("messages", [])
         opening = [] if history else [
@@ -86,7 +89,7 @@ def build_graph(
         }
 
     def route_after_agent(state: RagState) -> str:
-        if not registry:
+        if not registry or state["draft"].mode == "empty":
             return "cite"
         last = state["messages"][-1]
         wants_tools = bool(getattr(last, "tool_calls", None))
@@ -102,7 +105,7 @@ def build_graph(
         if cited.removed_markers:
             numbers = ", ".join(str(number) for number in cited.removed_markers)
             warnings.append(f"Removed citation markers with no matching passage: {numbers}")
-        if cited.flagged:
+        if cited.flagged and state["draft"].mode != "empty":
             warnings.append("This answer has no valid citation, so it can't be traced to a document.")
         if question_language(state["question"]) != question_language(cited.text):
             warnings.append("The answer may not be in the language of the question.")

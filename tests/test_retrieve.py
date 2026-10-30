@@ -5,12 +5,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from md_rag import cli
 from md_rag.chunker import Chunk, Section
-from md_rag.config import Config
+from md_rag.config import Config, load_config
 from md_rag.index import BM25, Index, IndexError_, load_index, stale_files, update_index
 from md_rag.retrieve import (
     Retriever,
     expand_to_sections,
+    is_relevant,
     maximal_marginal_relevance,
     reciprocal_rank_fusion,
     top_rows,
@@ -43,6 +45,9 @@ class HashEmbedder:
 
 
 def make_config(tmp_path: Path, docs: Path, **overrides) -> Config:
+    # Hash vectors have no meaningful cosine scale, so the cutoff is off here.
+    # The tests under "Relevance cutoff" set it themselves.
+    overrides.setdefault("min_relevance", 0.0)
     return Config(docs_dir=docs, index_dir=tmp_path / "index", **overrides)
 
 
@@ -226,7 +231,7 @@ def test_retrieval_finds_a_topic_in_all_three_fixture_files(tmp_path, docs):
     config = make_config(tmp_path, docs, mmr_keep=8)
     embedder = HashEmbedder()
     update_index(config, embedder)
-    passages = Retriever(config, load_index(config), embedder)("backup สำรองข้อมูล")
+    passages = Retriever(config, load_index(config), embedder)("backup สำรองข้อมูล").passages
     assert {item.file for item in passages} == {"english.md", "mixed.md", "thai.md"}
 
 
@@ -238,8 +243,98 @@ def test_query_is_normalized_before_keyword_search(tmp_path):
     config = make_config(tmp_path, docs)
     embedder = HashEmbedder()
     update_index(config, embedder)
-    passages = Retriever(config, load_index(config), embedder)("เเม่บ้าน")
+    passages = Retriever(config, load_index(config), embedder)("เเม่บ้าน").passages
     assert passages[0].file == "a.md"
+
+
+# Relevance cutoff
+
+
+class FixedEmbedder:
+    def __init__(self, vector):
+        self.vector = vector
+
+    def embed_query(self, text):
+        return self.vector
+
+
+def scored_index(chunk_cosines: dict[str, float], query_words: str = "") -> tuple[Index, list[float]]:
+    """Build one chunk per heading, each with an exact cosine to the returned query.
+
+    The query vector's last dimension belongs to no chunk, which is what lets
+    its cosine with every chunk be set independently.
+    """
+    index = small_index({heading: [f"{heading} {query_words}"] for heading in chunk_cosines})
+    size = len(chunk_cosines)
+    cosines = np.array(list(chunk_cosines.values()), dtype=np.float64)
+    index.vectors = np.hstack([np.eye(size), np.zeros((size, 1))]).astype(np.float32)
+    query = [*cosines.tolist(), float(np.sqrt(1 - (cosines**2).sum()))]
+    return index, query
+
+
+def cutoff_config(tmp_path: Path, minimum: float = 0.5) -> Config:
+    return Config(docs_dir=tmp_path, index_dir=tmp_path, min_relevance=minimum)
+
+
+def test_is_relevant_includes_the_boundary():
+    assert is_relevant(0.5, 0.5)
+    assert not is_relevant(0.499, 0.5)
+
+
+def test_question_below_the_cutoff_gets_no_passages(tmp_path):
+    index, query = scored_index({"A": 0.49, "B": 0.2})
+    result = Retriever(cutoff_config(tmp_path), index, FixedEmbedder(query))("anything")
+    assert result.passages == []
+    assert result.best_score == pytest.approx(0.49, abs=1e-5)
+
+
+def test_question_above_the_cutoff_gets_passages(tmp_path):
+    index, query = scored_index({"A": 0.51, "B": 0.2})
+    result = Retriever(cutoff_config(tmp_path), index, FixedEmbedder(query))("anything")
+    assert [item.heading_path for item in result.passages][0] == ("A",)
+
+
+def test_cutoff_is_a_gate_and_keeps_other_candidates_once_passed(tmp_path):
+    index, query = scored_index({"A": 0.51, "B": 0.2, "C": 0.1})
+    result = Retriever(cutoff_config(tmp_path), index, FixedEmbedder(query))("anything")
+    assert len(result.passages) == 3
+
+
+def test_top_fused_rank_does_not_pass_the_cutoff(tmp_path):
+    # This chunk is first in both rankings, so RRF would give it the best
+    # possible score, yet the cosine says it isn't relevant.
+    index, query = scored_index({"A": 0.3}, query_words="exact keyword match")
+    assert list(reciprocal_rank_fusion([[0], [0]], 60)) == [0]
+    result = Retriever(cutoff_config(tmp_path), index, FixedEmbedder(query))("exact keyword match")
+    assert result.passages == []
+
+
+def test_zero_turns_the_cutoff_off(tmp_path):
+    index, query = scored_index({"A": 0.01})
+    result = Retriever(cutoff_config(tmp_path, 0.0), index, FixedEmbedder(query))("anything")
+    assert len(result.passages) == 1
+
+
+def test_uncovered_question_through_the_cli_makes_no_model_call(tmp_path, docs, monkeypatch, capsys):
+    class FailingChat:
+        def invoke(self, messages):
+            raise AssertionError("a refused question must not reach the model")
+
+    settings = tmp_path / "config.toml"
+    settings.write_text(
+        f'[paths]\ndocs_dir = "{docs}"\nindex_dir = "{tmp_path / "index"}"\n'
+        "[retrieval]\nmin_relevance = 0.99\n",
+        encoding="utf-8",
+    )
+    update_index(load_config(settings), HashEmbedder())
+    monkeypatch.setattr(cli, "ensure_local_model", lambda *args: {})
+    monkeypatch.setattr(cli, "make_embedder", lambda *args: HashEmbedder())
+    monkeypatch.setattr(cli, "make_chat", lambda *args: FailingChat())
+
+    assert cli.main(["--config", str(settings), "ask", "cafeteria lunch menu"]) == cli.EXIT_NOT_COVERED
+    captured = capsys.readouterr()
+    assert captured.out == "The documents don't contain information on this topic.\n"
+    assert "min_relevance is 0.99" in captured.err
 
 
 def test_requirement_file_is_never_indexed(tmp_path, docs):

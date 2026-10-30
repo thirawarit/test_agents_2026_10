@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import tool
 
 from md_rag.graph import MAX_TOOL_ROUNDS, build_graph
-from md_rag.retrieve import Passage
+from md_rag.retrieve import Passage, Retrieval
 from md_rag.summarize import Draft
 from md_rag.tools import TOOLS
 
@@ -12,7 +12,7 @@ PASSAGES = [Passage(1, "a.md", ("Heading",), "body")]
 
 
 def retriever(question):
-    return PASSAGES
+    return Retrieval(PASSAGES, 0.8)
 
 
 def summarizer(question, passages):
@@ -92,7 +92,7 @@ def test_retrieval_always_runs_before_any_model_use():
 
     def tracking_retriever(question):
         calls.append("retrieve")
-        return PASSAGES
+        return Retrieval(PASSAGES, 0.8)
 
     def tracking_summarizer(question, passages):
         calls.append("summarize")
@@ -148,6 +148,23 @@ def test_answer_with_no_citation_is_flagged_with_a_warning():
 def test_answer_in_the_wrong_language_gets_a_warning():
     _, final = visited(build_graph(retriever, summarizer, NoToolsChat()), question="สรุปเรื่องการสำรองข้อมูล")
     assert any("language" in warning for warning in final["warnings"])
+
+
+def test_refused_question_skips_the_model_even_with_tools_registered():
+    def refused(question):
+        return Retrieval([], 0.31)
+
+    def not_covered(question, passages):
+        assert passages == []
+        return Draft("The documents don't contain information on this topic.", "empty")
+
+    chat = ToolChat([])
+    nodes, final = visited(build_graph(refused, not_covered, chat, tools={"lookup": lookup}))
+    assert nodes == ["retrieve", "summarize", "agent", "cite"]
+    assert chat.seen == []
+    assert final["cited"].sources == []
+    assert final["best_score"] == 0.31
+    assert not any("no valid citation" in warning for warning in final["warnings"])
 
 
 def test_summarizer_warnings_reach_the_final_state():

@@ -24,6 +24,22 @@ class Passage:
         return " > ".join((self.file, *self.heading_path))
 
 
+@dataclass(frozen=True)
+class Retrieval:
+    passages: list[Passage]
+    best_score: float  # highest dense cosine over all chunks
+
+
+def is_relevant(best_score: float, minimum: float) -> bool:
+    """Decide whether the documents cover a question at all.
+
+    This uses cosine because it measures how close a question and a chunk are.
+    RRF can't: it only sees ranks, so the best chunk of an unrelated corpus
+    still gets a top score.
+    """
+    return best_score >= minimum
+
+
 def top_rows(scores: np.ndarray, count: int) -> list[int]:
     """Return rows with a positive score, best first."""
     order = np.argsort(-scores, kind="stable")[:count]
@@ -100,14 +116,20 @@ class Retriever:
         self.index = index
         self.embedder = embedder
 
-    def __call__(self, question: str) -> list[Passage]:
+    def __call__(self, question: str) -> Retrieval:
         config = self.config
         query = normalize_text(question)
         vector = normalize_vectors(np.asarray(self.embedder.embed_query(query), dtype=np.float32))
-        dense = top_rows(self.index.vectors @ vector, config.dense_top_k)
+        scores = self.index.vectors @ vector
+        best_score = float(scores.max())
+        if not is_relevant(best_score, config.min_relevance):
+            return Retrieval([], best_score)
+        dense = top_rows(scores, config.dense_top_k)
         keyword = top_rows(self.index.bm25.scores(bm25_tokens(query)), config.bm25_top_k)
         fused = reciprocal_rank_fusion([dense, keyword], config.rrf_k)
         selected = maximal_marginal_relevance(
             fused, self.index.vectors, config.mmr_keep, config.mmr_lambda
         )
-        return expand_to_sections(self.index, selected, config.section_token_limit)
+        return Retrieval(
+            expand_to_sections(self.index, selected, config.section_token_limit), best_score
+        )

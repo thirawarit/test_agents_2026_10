@@ -37,6 +37,7 @@ The config is read from `--config PATH`, then `$MD_RAG_CONFIG`, then
 | 0 | Answer has at least one valid citation |
 | 1 | Error, or a failed `doctor` check |
 | 3 | Answer has no valid citation, so it can't be traced to a document |
+| 4 | Topic not covered by the documents: the reply says so and lists no sources |
 
 ## How it works
 
@@ -49,8 +50,9 @@ retrieve -> summarize -> agent <-> tools -> cite
    than `chunk_words` is split on sentences. Code fences and tables stay whole.
 3. **Index:** stores vectors in NumPy and chunks plus BM25 tokens in JSON, in
    `.rag_index/`. A rerun embeds only changed files.
-4. **Retrieve:** fuses dense and BM25 results, picks varied chunks with MMR, and
-   expands them to whole sections.
+4. **Retrieve:** refuses the question if its best dense cosine is below
+   `retrieval.min_relevance`. Otherwise it fuses dense and BM25 results, picks
+   varied chunks with MMR, and expands them to whole sections.
 5. **Summarize:** uses one call if the sections fit, otherwise map-reduce with
    citation numbers preserved.
 6. **Agent:** a pass-through while the tool registry is empty.
@@ -60,6 +62,11 @@ The graph is fixed, so the model can't skip retrieval.
 
 ## Tuning
 
+- `retrieval.min_relevance` is 0.50. A refused question prints its best score to
+  stderr, which shows how close it came. Check this value on your own documents:
+  scores depend on the corpus, and two uncovered questions that scored below 0.50
+  on the fixtures scored above it on a larger synthetic corpus. Recheck it if
+  `embed_model` changes. Setting it to 0 turns the check off.
 - `retrieval.mmr_keep` is the main control over focus. Lower values keep the
   answer on topic but can drop files from a cross-file summary. On the test
   fixtures, 6 removed off-topic facts but also lost one of the three files
@@ -100,9 +107,14 @@ gemma3 doesn't support tools either, so you'd need a generation model that does.
 - Citations prove that a passage was retrieved, not that it supports the claim.
   An answer can be wrong and still carry a valid citation, so check important
   facts against the source.
-- Retrieval has no relevance cutoff. A question that the documents don't cover
-  still gets the closest passages, so the answer can cite something related but
-  not relevant, and it won't be flagged.
+- The relevance cutoff is a single score, and it makes mistakes both ways:
+  - A question next to a covered topic can pass. A Thai sick leave question
+    scored 0.64 against the annual leave section, so it gets an answer that says
+    sick leave isn't covered but still cites other sections and exits 0.
+  - A covered question can be refused. This mostly affects loosely worded Thai
+    questions against English text, and bare identifiers such as
+    `pg_size_pretty`, because the check doesn't use keyword matches. If a
+    question is refused, try rewording it with terms from the documents.
 - `gemma3` sometimes includes off-topic facts or blurs details when summarizing
   Thai. See `retrieval.mmr_keep` above.
 - Long code fences or tables are kept whole, so their embedding can be cut off at

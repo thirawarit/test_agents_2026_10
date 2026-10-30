@@ -22,6 +22,7 @@ from md_rag.tools import TOOLS
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_NO_CITATION = 3
+EXIT_NOT_COVERED = 4
 
 
 def cmd_index(config: Config, args: argparse.Namespace) -> int:
@@ -56,6 +57,13 @@ def cmd_ask(config: Config, args: argparse.Namespace) -> int:
         print(format_sources(cited.sources))
     for warning in state.get("warnings", []):
         print(f"warning: {warning}", file=sys.stderr)
+    if state["draft"].mode == "empty":
+        print(
+            f"warning: topic not covered: best match scored {state['best_score']:.3f}, "
+            f"retrieval.min_relevance is {config.min_relevance:.2f}",
+            file=sys.stderr,
+        )
+        return EXIT_NOT_COVERED
     return EXIT_NO_CITATION if cited.flagged else EXIT_OK
 
 

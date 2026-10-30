@@ -29,3 +29,9 @@ rrf_k = 60
 mmr_keep = 24
 mmr_lambda = 0.7
 section_token_limit = 2000
+# Questions whose best chunk has a dense cosine below this are answered as "not
+# covered", with no model call and exit code 4. 0 turns the check off.
+# 0.50 was the best split across 77 questions on the test fixtures, but covered
+# and uncovered scores overlap (0.46 to 0.64), so no value gets every question
+# right. Check it on your own documents, and again if embed_model changes.
+min_relevance = 0.50

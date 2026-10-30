@@ -161,6 +161,19 @@ def test_generation_model_is_configurable(tmp_path):
     assert make_chat(load_config(path)).model == "llama3.2:latest"
 
 
+@pytest.mark.parametrize("value", [-0.1, 1.5])
+def test_min_relevance_outside_the_cosine_range_is_refused(value):
+    with pytest.raises(ConfigError, match="min_relevance"):
+        config_for("http://127.0.0.1:11434", min_relevance=value)
+
+
+def test_example_config_states_the_default_cutoff(tmp_path):
+    example = (ROOT / "config.example.toml").read_text(encoding="utf-8")
+    copy = tmp_path / "config.toml"
+    copy.write_text(example, encoding="utf-8")
+    assert load_config(copy).min_relevance == config_for("http://127.0.0.1:11434").min_relevance == 0.5
+
+
 def test_context_budget_refuses_a_window_too_small_for_the_answer():
     with pytest.raises(ConfigError, match="num_ctx"):
         config_for("http://127.0.0.1:11434", num_ctx=1024, num_predict=1024)
