@@ -167,11 +167,28 @@ def test_min_relevance_outside_the_cosine_range_is_refused(value):
         config_for("http://127.0.0.1:11434", min_relevance=value)
 
 
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [("rare_term_max_fraction", -0.1), ("rare_term_max_fraction", 1.5), ("rare_term_max_thai_freq", -1)],
+)
+def test_rare_term_settings_outside_their_range_are_refused(name, value):
+    with pytest.raises(ConfigError, match=name):
+        config_for("http://127.0.0.1:11434", **{name: value})
+
+
 def test_example_config_states_the_default_cutoff(tmp_path):
     example = (ROOT / "config.example.toml").read_text(encoding="utf-8")
     copy = tmp_path / "config.toml"
     copy.write_text(example, encoding="utf-8")
     assert load_config(copy).min_relevance == config_for("http://127.0.0.1:11434").min_relevance == 0.5
+
+
+def test_example_config_states_the_rare_term_defaults(tmp_path):
+    copy = tmp_path / "config.toml"
+    copy.write_text((ROOT / "config.example.toml").read_text(encoding="utf-8"), encoding="utf-8")
+    loaded, defaults = load_config(copy), config_for("http://127.0.0.1:11434")
+    assert loaded.rare_term_max_fraction == defaults.rare_term_max_fraction == 0.05
+    assert loaded.rare_term_max_thai_freq == defaults.rare_term_max_thai_freq == 150
 
 
 def test_context_budget_refuses_a_window_too_small_for_the_answer():

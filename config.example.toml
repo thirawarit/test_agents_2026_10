@@ -35,3 +35,10 @@ section_token_limit = 2000
 # and uncovered scores overlap (0.46 to 0.64), so no value gets every question
 # right. Check it on your own documents, and again if embed_model changes.
 min_relevance = 0.50
+# A question below min_relevance still passes if it contains a rare literal term
+# from the documents, such as MinIO or SEV3. A term is rare if it is in at most
+# this fraction of chunks, and always in at least one. 0 turns this rule off.
+rare_term_max_fraction = 0.05
+# Thai terms must also have at most this count in PyThaiNLP's bundled word list.
+# 150 sits between terms like เชียงใหม่ (132) and common words like ทำงาน (170).
+rare_term_max_thai_freq = 150

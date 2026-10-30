@@ -9,7 +9,15 @@ import numpy as np
 
 from md_rag.config import Config
 from md_rag.index import Index, normalize_vectors
-from md_rag.textnorm import bm25_tokens, estimate_tokens, normalize_text
+from md_rag.textnorm import (
+    bm25_tokens,
+    estimate_tokens,
+    is_thai_stopword,
+    is_thai_word,
+    literal_terms,
+    normalize_text,
+    thai_word_frequency,
+)
 
 
 @dataclass(frozen=True)
@@ -28,6 +36,7 @@ class Passage:
 class Retrieval:
     passages: list[Passage]
     best_score: float  # highest dense cosine over all chunks
+    rare_terms: tuple[str, ...] = ()  # the terms that passed a low-scoring question
 
 
 def is_relevant(best_score: float, minimum: float) -> bool:
@@ -38,6 +47,44 @@ def is_relevant(best_score: float, minimum: float) -> bool:
     still gets a top score.
     """
     return best_score >= minimum
+
+
+def rare_terms(query: str, index: Index, config: Config) -> tuple[str, ...]:
+    """Return rare literal query terms that the documents contain.
+
+    Embeddings often miss a bare name such as "MinIO", so such a match can pass
+    a question that the cosine check would refuse. Being in few chunks isn't
+    enough, because on a small corpus "policy" or "บริษัท" are in few chunks too,
+    so a term must also be uncommon in the language:
+
+    - Latin: identifier-shaped in the documents, which is checked against whole
+      terms because BM25 splits pg_size_pretty into "pg", "size" and "pretty".
+    - Thai: low frequency in general Thai. That data rates modern work words
+      such as "ไฟล์" as rare, so every other content word of the question must
+      also be in the documents.
+    """
+    if config.rare_term_max_fraction == 0:
+        return ()
+    limit = max(1, int(len(index.chunks) * config.rare_term_max_fraction))
+
+    found: list[str] = []
+    for term in literal_terms(query):
+        count = index.identifiers.get(term) or index.identifiers.get(term.lower()) or 0
+        if 0 < count <= limit:
+            found.append(term)
+
+    postings = index.bm25.postings
+    content = [token for token in bm25_tokens(query) if not is_thai_stopword(token)]
+    if all(token in postings for token in content):
+        found += [
+            token
+            for token in content
+            if is_thai_word(token)
+            and len(token) > 1
+            and len(postings[token]) <= limit
+            and thai_word_frequency(token) <= config.rare_term_max_thai_freq
+        ]
+    return tuple(dict.fromkeys(found))
 
 
 def top_rows(scores: np.ndarray, count: int) -> list[int]:
@@ -122,8 +169,11 @@ class Retriever:
         vector = normalize_vectors(np.asarray(self.embedder.embed_query(query), dtype=np.float32))
         scores = self.index.vectors @ vector
         best_score = float(scores.max())
+        matched: tuple[str, ...] = ()
         if not is_relevant(best_score, config.min_relevance):
-            return Retrieval([], best_score)
+            matched = rare_terms(query, self.index, config)
+            if not matched:
+                return Retrieval([], best_score)
         dense = top_rows(scores, config.dense_top_k)
         keyword = top_rows(self.index.bm25.scores(bm25_tokens(query)), config.bm25_top_k)
         fused = reciprocal_rank_fusion([dense, keyword], config.rrf_k)
@@ -131,5 +181,7 @@ class Retriever:
             fused, self.index.vectors, config.mmr_keep, config.mmr_lambda
         )
         return Retrieval(
-            expand_to_sections(self.index, selected, config.section_token_limit), best_score
+            expand_to_sections(self.index, selected, config.section_token_limit),
+            best_score,
+            matched,
         )

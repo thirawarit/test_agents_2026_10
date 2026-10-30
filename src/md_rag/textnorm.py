@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from functools import cache
 
+from pythainlp.corpus import thai_stopwords, ttc
 from pythainlp.tokenize import sent_tokenize, word_tokenize
 from pythainlp.util import normalize as thai_normalize
 
@@ -19,6 +21,11 @@ _ZERO_WIDTH = re.compile("[​‌‍⁠﻿]")
 _RUN = re.compile(f"(?P<thai>[{_THAI_RANGE}]+)|(?P<latin>[^\\W_{_THAI_RANGE}]+)")
 _LATIN_BOUNDARY = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
 _THAI_REPEAT_MARKS = {"ๆ", "ฯ"}
+# A Latin term with its joining characters, which BM25 tokens split apart.
+_LITERAL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_./\-]*[A-Za-z0-9])?")
+_LOWER_THEN_UPPER = re.compile(r"[a-z][A-Z]")
+_LETTER_THEN_DIGIT = re.compile(r"^[A-Za-z].*[0-9]")
+_FILE_SUFFIX = re.compile(r"^[A-Za-z0-9_\-]{2,}\.[a-z0-9]{1,5}$")
 
 THAI_WORD_ENGINE = "newmm"
 THAI_SENTENCE_ENGINE = "crfcut"
@@ -59,6 +66,58 @@ def word_tokens(text: str) -> list[str]:
 def bm25_tokens(text: str) -> list[str]:
     """Return lowercased word units for the keyword index."""
     return [token.lower() for token in word_tokens(text)]
+
+
+def is_identifier(word: str) -> bool:
+    """Return True for a Latin term shaped like a name, not an ordinary word.
+
+    Rarity alone can't show this: in a small corpus "policy" and "office" appear
+    in a single chunk, just as "MinIO" does. Shape is what tells them apart.
+    """
+    letters = [char for char in word if char.isalpha()]
+    return bool(
+        "_" in word
+        or _LOWER_THEN_UPPER.search(word)
+        or _LETTER_THEN_DIGIT.search(word)
+        or _FILE_SUFFIX.match(word)
+        or (len(letters) >= 2 and word.isupper())
+    )
+
+
+def literal_terms(text: str) -> list[str]:
+    return _LITERAL.findall(text)
+
+
+def identifier_key(word: str) -> str:
+    """Return the lookup form of a document identifier.
+
+    Plain all-caps words keep their case, so "SELECT" in a code block can't match
+    the verb in "select a plan". Other identifiers match in any case, so "minio"
+    finds "MinIO".
+    """
+    return word if word.isalpha() and word.isupper() else word.lower()
+
+
+def document_identifiers(text: str) -> set[str]:
+    return {identifier_key(word) for word in literal_terms(text) if is_identifier(word)}
+
+
+def is_thai_word(token: str) -> bool:
+    return bool(_THAI_RUN.search(token))
+
+
+def is_thai_stopword(token: str) -> bool:
+    return token in thai_stopwords()
+
+
+@cache
+def _thai_frequencies() -> dict[str, int]:
+    return dict(ttc.word_freqs())
+
+
+def thai_word_frequency(token: str) -> int:
+    """Return a word's count in the Thai Textbook Corpus list bundled with PyThaiNLP."""
+    return _thai_frequencies().get(token, 0)
 
 
 def word_count(text: str) -> int:

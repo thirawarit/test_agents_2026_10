@@ -73,6 +73,8 @@ class Config:
     mmr_lambda: float = 0.7
     section_token_limit: int = 2000
     min_relevance: float = 0.5
+    rare_term_max_fraction: float = 0.05
+    rare_term_max_thai_freq: int = 150
 
     source_path: Path | None = field(default=None, compare=False)
 
@@ -86,6 +88,10 @@ class Config:
             raise ConfigError("retrieval: mmr_lambda must be between 0 and 1")
         if not 0 <= self.min_relevance <= 1:
             raise ConfigError("retrieval: min_relevance must be between 0 and 1")
+        if not 0 <= self.rare_term_max_fraction <= 1:
+            raise ConfigError("retrieval: rare_term_max_fraction must be between 0 and 1")
+        if self.rare_term_max_thai_freq < 0:
+            raise ConfigError("retrieval: rare_term_max_thai_freq must be at least 0")
         if self.context_budget < _MIN_CONTEXT_BUDGET:
             raise ConfigError(
                 f"ollama: num_ctx {self.num_ctx} leaves only {self.context_budget} tokens for "
@@ -119,6 +125,8 @@ _SECTIONS: dict[str, tuple[str, ...]] = {
         "mmr_lambda",
         "section_token_limit",
         "min_relevance",
+        "rare_term_max_fraction",
+        "rare_term_max_thai_freq",
     ),
 }
 

@@ -99,6 +99,23 @@ def test_covered_question_passes_the_cutoff(config, graph, question):
     assert result.passages, f"refused at {result.best_score:.3f}"
 
 
+@pytest.mark.parametrize(
+    ("question", "term"),
+    [
+        ("MinIO", "MinIO"),
+        ("SEV3", "SEV3"),
+        ("pg_size_pretty", "pg_size_pretty"),
+        ("SEV3 คืออะไร", "SEV3"),
+        ("เชียงใหม่", "เชียงใหม่"),
+    ],
+)
+def test_rare_term_passes_a_question_that_cosine_would_refuse(config, graph, question, term):
+    result = Retriever(config, load_index(config), make_embedder(config))(question)
+    assert result.best_score < config.min_relevance
+    assert term in result.rare_terms
+    assert result.passages
+
+
 @pytest.mark.xfail(reason="Measured wrong refusals: loose Thai wording against English text", strict=False)
 @pytest.mark.parametrize(
     "question",
@@ -115,6 +132,8 @@ def test_known_wrong_refusals(config, graph, question):
         pytest.param("นโยบายการลาคลอดของบริษัทเป็นอย่างไร", id="maternity-th"),
         pytest.param("What is the capital of Australia?", id="unrelated-en"),
         pytest.param("กติกาฟุตบอลมีอะไรบ้าง", id="unrelated-th"),
+        pytest.param("How do I select a health plan?", id="all-caps-word-as-verb"),
+        pytest.param("เชียงใหม่มีร้านอาหารอะไรบ้าง", id="rare-thai-term-off-topic"),
     ],
 )
 def test_uncovered_question_is_refused_without_citations(config, graph, question):

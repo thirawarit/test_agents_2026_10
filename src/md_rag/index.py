@@ -21,7 +21,7 @@ import numpy as np
 from md_rag.chunker import Chunk, Section, chunk_document
 from md_rag.config import Config
 from md_rag.loader import Document, load_documents
-from md_rag.textnorm import bm25_tokens
+from md_rag.textnorm import bm25_tokens, document_identifiers
 
 SCHEMA_VERSION = 1
 MANIFEST_NAME = "manifest.json"
@@ -68,9 +68,13 @@ class Index:
     vectors: np.ndarray
     files: dict[str, str]
     bm25: BM25 = field(init=False)
+    identifiers: Counter[str] = field(init=False)  # identifier -> chunks containing it
 
     def __post_init__(self) -> None:
         self.bm25 = BM25(self.tokens)
+        self.identifiers = Counter()
+        for chunk in self.chunks:
+            self.identifiers.update(document_identifiers(chunk.embed_text))
 
 
 @dataclass(frozen=True)

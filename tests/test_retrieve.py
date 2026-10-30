@@ -337,6 +337,118 @@ def test_uncovered_question_through_the_cli_makes_no_model_call(tmp_path, docs, 
     assert "min_relevance is 0.99" in captured.err
 
 
+# Rare-term pass
+
+
+DOCUMENT_TEXT = [
+    "Files are kept on MinIO for 14 days.",
+    "SEV3 means a minor defect in the policy of the office.",
+    "SELECT pg_size_pretty(pg_database_size('phoenix'));",
+    "บริษัทมีศูนย์ข้อมูลที่เชียงใหม่ ทีมงานทำงานทุกไตรมาส",
+]
+
+
+def ask_below_cutoff(tmp_path, question, texts=DOCUMENT_TEXT, **overrides):
+    """Run retrieval where every chunk scores 0.05, far below the cutoff."""
+    index = small_index({f"Heading{number}": [text] for number, text in enumerate(texts)})
+    size = len(texts)
+    index.vectors = np.hstack([np.eye(size), np.zeros((size, 1))]).astype(np.float32)
+    query = [0.05] * size + [float(np.sqrt(1 - size * 0.05**2))]
+    config = Config(docs_dir=tmp_path, index_dir=tmp_path, **overrides)
+    return Retriever(config, index, FixedEmbedder(query))(question)
+
+
+@pytest.mark.parametrize(
+    ("question", "term"),
+    [
+        ("MinIO", "MinIO"),
+        ("minio", "minio"),
+        ("SEV3", "SEV3"),
+        ("pg_size_pretty", "pg_size_pretty"),
+        ("What does pg_size_pretty do here?", "pg_size_pretty"),
+        ("MinIO ใช้ทำอะไร", "MinIO"),
+        ("SEV3 คืออะไร", "SEV3"),
+    ],
+)
+def test_rare_identifier_passes_a_low_scoring_question(tmp_path, question, term):
+    result = ask_below_cutoff(tmp_path, question)
+    assert result.passages
+    assert result.rare_terms == (term,)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is the company policy on parental leave?",
+        "What is the dress code at the office?",
+        "How do I select a health plan?",
+        "What is the size of the bonus?",
+        "Is it pretty?",
+    ],
+)
+def test_common_words_in_a_single_chunk_do_not_pass(tmp_path, question):
+    assert ask_below_cutoff(tmp_path, question).passages == []
+
+
+def test_rare_thai_term_passes(tmp_path):
+    result = ask_below_cutoff(tmp_path, "เชียงใหม่")
+    assert result.passages
+    assert result.rare_terms == ("เชียงใหม่",)
+
+
+def test_rare_thai_term_with_stopwords_passes(tmp_path):
+    assert ask_below_cutoff(tmp_path, "ไตรมาสคืออะไร").rare_terms == ("ไตรมาส",)
+
+
+@pytest.mark.parametrize("question", ["บริษัท", "ทำงาน", "ของ"])
+def test_common_thai_words_in_a_single_chunk_do_not_pass(tmp_path, question):
+    assert ask_below_cutoff(tmp_path, question).passages == []
+
+
+@pytest.mark.xfail(reason="The word list comes from textbooks, so it rates ทีมงาน as rare", strict=True)
+def test_workplace_thai_word_does_not_pass(tmp_path):
+    assert ask_below_cutoff(tmp_path, "ทีมงานทำงาน").passages == []
+
+
+def test_rare_thai_term_fails_when_another_content_word_is_missing(tmp_path):
+    assert ask_below_cutoff(tmp_path, "เชียงใหม่มีร้านอาหารอะไรบ้าง").passages == []
+
+
+def test_thai_frequency_limit_is_configurable(tmp_path):
+    assert ask_below_cutoff(tmp_path, "บริษัท", rare_term_max_thai_freq=300).rare_terms == ("บริษัท",)
+    assert ask_below_cutoff(tmp_path, "เชียงใหม่", rare_term_max_thai_freq=100).passages == []
+
+
+def test_a_term_in_many_chunks_is_not_rare(tmp_path):
+    texts = [f"MinIO note {number}" for number in range(3)] + [f"other {number}" for number in range(37)]
+    assert ask_below_cutoff(tmp_path, "MinIO", texts).passages == []
+
+
+def test_rarity_limit_scales_with_the_corpus_and_is_configurable(tmp_path):
+    texts = [f"MinIO note {number}" for number in range(3)] + [f"other {number}" for number in range(37)]
+    assert ask_below_cutoff(tmp_path, "MinIO", texts, rare_term_max_fraction=0.1).passages
+
+
+def test_rare_term_absent_from_the_documents_does_not_pass(tmp_path):
+    assert ask_below_cutoff(tmp_path, "SEV9").passages == []
+
+
+def test_zero_turns_the_rare_term_rule_off(tmp_path):
+    assert ask_below_cutoff(tmp_path, "MinIO", rare_term_max_fraction=0).passages == []
+
+
+def test_question_passing_on_cosine_reports_no_rare_terms(tmp_path):
+    index, query = scored_index({"A": 0.51}, query_words="MinIO")
+    result = Retriever(cutoff_config(tmp_path), index, FixedEmbedder(query))("MinIO")
+    assert result.passages
+    assert result.rare_terms == ()
+
+
+def test_heading_text_counts_as_document_text(tmp_path):
+    index = small_index({"MinIO": ["storage notes"]})
+    assert index.identifiers["minio"] == 1
+
+
 def test_requirement_file_is_never_indexed(tmp_path, docs):
     write(docs / "REQ.local.md", "# Requirement\n\nsecret requirement text\n")
     config = make_config(tmp_path, docs)
