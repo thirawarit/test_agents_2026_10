@@ -19,6 +19,8 @@ DEFAULT_CONFIG_NAME = "config.local.toml"
 CONFIG_ENV_VAR = "MD_RAG_CONFIG"
 
 _CLOUD_MODEL = re.compile(r"(^|[:\-])cloud$", re.IGNORECASE)
+_CONTEXT_SAFETY = 0.8
+_MIN_CONTEXT_BUDGET = 256
 
 
 class ConfigError(Exception):
@@ -81,11 +83,24 @@ class Config:
             raise ConfigError("chunking: overlap_words must be at least 0 and below chunk_words")
         if not 0 <= self.mmr_lambda <= 1:
             raise ConfigError("retrieval: mmr_lambda must be between 0 and 1")
-        if self.num_predict >= self.num_ctx:
-            raise ConfigError("ollama: num_predict must be below num_ctx")
+        if self.context_budget < _MIN_CONTEXT_BUDGET:
+            raise ConfigError(
+                f"ollama: num_ctx {self.num_ctx} leaves only {self.context_budget} tokens for "
+                f"prompts after num_predict {self.num_predict}; raise num_ctx or lower num_predict"
+            )
         for name in ("dense_top_k", "bm25_top_k", "rrf_k", "mmr_keep", "section_token_limit"):
             if getattr(self, name) < 1:
                 raise ConfigError(f"retrieval: {name} must be at least 1")
+
+    @property
+    def context_budget(self) -> int:
+        """Estimated prompt tokens a single call may use.
+
+        When a prompt overflows num_ctx, Ollama drops part of it without an
+        error, and the system instructions can be lost with it. The margin
+        absorbs error in the token estimate so that overflow stays rare.
+        """
+        return int(self.num_ctx * _CONTEXT_SAFETY) - self.num_predict
 
 
 # TOML section -> keys it may contain, all named after Config fields.

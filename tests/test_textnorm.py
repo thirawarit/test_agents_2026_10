@@ -1,5 +1,6 @@
 from md_rag.textnorm import (
     bm25_tokens,
+    estimate_tokens,
     normalize_text,
     question_language,
     split_runs,
@@ -71,6 +72,26 @@ def test_split_sentences_splits_english_and_keeps_text():
 def test_split_sentences_handles_mixed_lines():
     text = "Phase 1 เริ่มในเดือนมีนาคม The rollback stays open. It closes after 72 hours.\n"
     assert "".join(split_sentences(text)) == text
+
+
+def test_estimate_stays_above_measured_gemma3_counts():
+    # Real prompt_eval_count values from Ollama for these exact strings.
+    thai = "ระบบสำรองข้อมูลทำงานทุกคืนเวลาสองนาฬิกาและเก็บสำเนาไว้สามสิบวัน " * 40
+    english = "The backup system runs every night at two and keeps copies for thirty days. " * 40
+    assert estimate_tokens(thai) >= 940
+    assert estimate_tokens(english) >= 620
+
+
+def test_estimate_charges_for_citation_markers():
+    plain = "note " * 100
+    cited = "note [12] " * 100
+    assert estimate_tokens(cited) - estimate_tokens(plain) >= 300
+
+
+def test_estimate_charges_for_every_number_in_a_citation_list():
+    short = "note [1]"
+    long = "note [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]"
+    assert estimate_tokens(long) - estimate_tokens(short) >= 25
 
 
 def test_question_language():

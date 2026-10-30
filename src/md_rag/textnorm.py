@@ -65,6 +65,24 @@ def word_count(text: str) -> int:
     return len(word_tokens(text))
 
 
+def estimate_tokens(text: str) -> int:
+    """Estimate gemma3 prompt tokens, rounded up to plan context safely.
+
+    Measured on Ollama: about 0.37 tokens per Thai character and 0.20 per
+    other character. The rates below sit just above those. Digits and
+    punctuation cost about a token each, so they are charged in full: citation
+    lists like [1, 2, 3] are mostly digits, and at the plain rate they left
+    notes undercounted by 1.8x.
+    """
+    thai = symbols = 0
+    for char in text:
+        if "฀" <= char <= "๿":
+            thai += 1
+        elif char.isascii() and not char.isalpha() and not char.isspace():
+            symbols += 1
+    return int(thai * 0.40 + symbols + (len(text) - thai - symbols) * 0.25) + 1
+
+
 def split_sentences(text: str) -> list[str]:
     """Split text into sentences that concatenate back to the input.
 
